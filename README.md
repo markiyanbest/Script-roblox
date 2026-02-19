@@ -199,7 +199,26 @@ local function CreateUI()
         Message("Fling", "Disabled on respawn", 3)
     end)
 
-    -- J-Toggle
+    -- [[ КНОПКА ДЛЯ ТЕЛЕФОНІВ ]]
+    local IsMobile = UIS.TouchEnabled and not UIS.KeyboardEnabled -- Перевірка, чи це телефон/планшет
+    
+    local MobileBtn = Instance.new("TextButton", Screen)
+    MobileBtn.Name = "MobileToggle"
+    MobileBtn.Size = UDim2.new(0, 50, 0, 50)
+    MobileBtn.Position = UDim2.new(0, 10, 0.5, -25) -- Зліва по центру екрана
+    MobileBtn.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+    MobileBtn.TextColor3 = Color3.new(1, 1, 1)
+    MobileBtn.Text = "UI"
+    MobileBtn.Font = Enum.Font.GothamBold
+    MobileBtn.Visible = IsMobile -- Буде видимою лише на мобільних пристроях
+    Instance.new("UICorner", MobileBtn).CornerRadius = UDim.new(0, 10)
+    Instance.new("UIStroke", MobileBtn).Color = Color3.new(1, 1, 1)
+
+    MobileBtn.MouseButton1Click:Connect(function()
+        Main.Visible = not Main.Visible
+    end)
+
+    -- J-Toggle (Для ПК)
     UIS.InputBegan:Connect(function(i, g)
         if not g and i.KeyCode == Enum.KeyCode.J then Main.Visible = not Main.Visible end
     end)
@@ -226,4 +245,4 @@ task.spawn(function()
 end)
 
 CreateUI()
-Message("Omni-Fling 10/10", "Ready! Press 'J' to Hide Menu.", 5)
+Message("Omni-Fling 10/10", "Ready! Press 'J' or use UI button to Hide Menu.", 5)
