@@ -1,5 +1,5 @@
 -- ╔══════════════════════════════════════════════════════════╗
--- ║       OMNI-FLING  V3.0  >>>  MONSTER EDITION            ║
+-- ║       OMNI-FLING  V3.0  >>>  MONSTER EDITION  [FIXED]   ║
 -- ║  Анти-кік | Анти-бан | Анти-детект | Авто-відновлення  ║
 -- ╚══════════════════════════════════════════════════════════╝
 
@@ -13,24 +13,32 @@ local Workspace    = game:GetService("Workspace")
 local StarterGui   = game:GetService("StarterGui")
 local TweenService = game:GetService("TweenService")
 local HttpService  = game:GetService("HttpService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local LP     = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 
 -- ============================================================
 -- [[ 0. ЗАХИСТ ВІД ПОДВІЙНОГО ЗАПУСКУ ]]
+-- FIX: getgenv() може не існувати — fallback до _G
 -- ============================================================
-if getgenv().OmniFlingLoaded then
-    pcall(function() getgenv().OmniFlingStop() end)
-    task.wait(0.1)
+local _env = (typeof(getgenv) == "function" and getgenv()) or _G
+
+if _env.OmniFlingLoaded then
+    pcall(function()
+        if typeof(_env.OmniFlingStop) == "function" then
+            _env.OmniFlingStop()
+        end
+    end)
+    task.wait(0.15)
 end
-getgenv().OmniFlingLoaded = true
+_env.OmniFlingLoaded = true
 
 pcall(function()
-    for _, sg in pairs({ game:GetService("CoreGui"), LP:WaitForChild("PlayerGui") }) do
-        for _, v in pairs(sg:GetChildren()) do
-            if v.Name == "OmniFling" then v:Destroy() end
+    for _, sg in pairs({ game:GetService("CoreGui"), LP:WaitForChild("PlayerGui", 5) }) do
+        if sg then
+            for _, v in pairs(sg:GetChildren()) do
+                if v.Name == "OmniFling" then v:Destroy() end
+            end
         end
     end
 end)
@@ -38,29 +46,28 @@ end)
 -- ============================================================
 -- [[ 1. КОНФІГ ]]
 -- ============================================================
-getgenv().FPDH = getgenv().FPDH or workspace.FallenPartsDestroyHeight
+_env.FPDH = _env.FPDH or workspace.FallenPartsDestroyHeight
 
 local Whitelist = { LP.UserId }
 
 local State = {
-    FlingLoop   = false,
-    FlingStyle  = "auto",
-    Flinging    = false,
-    Stopped     = false,
+    FlingLoop  = false,
+    FlingStyle = "auto",
+    Flinging   = false,
+    Stopped    = false,
 }
 
 local Config = {
     CurrentTarget  = "",
     FlingDuration  = 2,
     LoopDelay      = 0.05,
-    -- Антидетект налаштування
-    MaxVelocity    = 9e8,       -- максимальна швидкість (не перевищуй 9e8)
-    TeleportNoise  = true,      -- рандомний зсув при телепорті (анти-детект)
-    AntiAFK        = true,      -- анти-АФК
-    AutoRespawn    = true,      -- авто-відновлення флінгу після смерті
-    SafeReturn     = true,      -- безпечне повернення на позицію
-    CameraRestore  = true,      -- відновлення камери після флінгу
-    SilentMode     = false,     -- не показувати нотифікації (анти-детект)
+    MaxVelocity    = 9e8,
+    TeleportNoise  = true,
+    AntiAFK        = true,
+    AutoRespawn    = true,
+    SafeReturn     = true,
+    CameraRestore  = true,
+    SilentMode     = false,
 }
 
 local IsMobile = UIS.TouchEnabled and not UIS.MouseEnabled
@@ -92,12 +99,6 @@ local function IsAlive(player)
     return hum and hum.Health > 0
 end
 
-local function SafeCall(f, ...)
-    local ok, err = pcall(f, ...)
-    return ok, err
-end
-
--- Рандомний шум для позиції (анти-детект — щоб не було однакових пакетів)
 local function Jitter()
     if not Config.TeleportNoise then return Vector3.new(0,0,0) end
     return Vector3.new(
@@ -148,52 +149,42 @@ local function GetTarget(input)
 end
 
 -- ============================================================
--- [[ 3. АНТИ-АФК (захист від кіку за АФК) ]]
+-- [[ 3. АНТИ-АФК ]]
+-- FIX: VirtualUser wrapped properly, без nil-call
 -- ============================================================
 local function StartAntiAFK()
     if not Config.AntiAFK then return end
     task.spawn(function()
         while not State.Stopped do
-            task.wait(math.random(55, 65)) -- рандомний час між 55-65 сек
-            -- Симулюємо рух мишки (непомітно)
-            local VPS = game:GetService("VirtualUser")
-            if VPS then
-                pcall(function()
+            task.wait(math.random(55, 65))
+            pcall(function()
+                local ok, VPS = pcall(function() return game:GetService("VirtualUser") end)
+                if ok and VPS then
                     VPS:Button2Down(Vector2.new(0,0), CFrame.new())
                     task.wait(0.05)
                     VPS:Button2Up(Vector2.new(0,0), CFrame.new())
-                end)
-            end
-            -- Також через input
-            pcall(function()
-                local fakeInput = {
-                    KeyCode = Enum.KeyCode.Unknown,
-                    UserInputType = Enum.UserInputType.None
-                }
-                LP:GetMouse()
+                end
             end)
         end
     end)
 end
 
 -- ============================================================
--- [[ 4. АНТИ-ДЕТЕКТ: безпечний телепорт з лімітом частоти ]]
+-- [[ 4. БЕЗПЕЧНИЙ ТЕЛЕПОРТ ]]
 -- ============================================================
 local lastTeleportTime = 0
-local TELEPORT_COOLDOWN = 0 -- можна підвищити до 0.016 якщо є проблеми
+local TELEPORT_COOLDOWN = 0
 
 local function SafeSetCFrame(part, cf)
     if not part or not part.Parent then return end
     local now = tick()
     if now - lastTeleportTime < TELEPORT_COOLDOWN then return end
     lastTeleportTime = now
-    pcall(function()
-        part.CFrame = cf
-    end)
+    pcall(function() part.CFrame = cf end)
 end
 
 -- ============================================================
--- [[ 5. CORE FLING (SkidFling + покращення анти-кіку) ]]
+-- [[ 5. CORE FLING ]]
 -- ============================================================
 local function FlingPlayer(TargetPlayer)
     if not TargetPlayer then return end
@@ -209,8 +200,7 @@ local function FlingPlayer(TargetPlayer)
     local RootPart  = Humanoid and Humanoid.RootPart
 
     if not Character or not Humanoid or not RootPart then
-        State.Flinging = false
-        return
+        State.Flinging = false; return
     end
 
     local TCharacter = TargetPlayer.Character
@@ -221,53 +211,42 @@ local function FlingPlayer(TargetPlayer)
     local Handle     = Accessory and Accessory:FindFirstChild("Handle")
 
     if not THumanoid or not TCharacter then
-        State.Flinging = false
-        return
+        State.Flinging = false; return
     end
 
-    -- Зберігаємо безпечну позицію для повернення
     if RootPart.Velocity.Magnitude < 50 then
-        getgenv().OldPos = RootPart.CFrame
+        _env.OldPos = RootPart.CFrame
     end
 
-    -- Камера на ціль (щоб виглядало природньо)
     if Config.CameraRestore then
         local camTarget = THead or Handle or THumanoid
         pcall(function() Camera.CameraSubject = camTarget end)
     end
 
-    -- Розблоковуємо FallenPartsDestroyHeight
     workspace.FallenPartsDestroyHeight = 0/0
 
-    -- BodyVelocity — застосовуємо до нас
     local BV = Instance.new("BodyVelocity")
-    BV.Name     = "OFV_" .. tostring(math.random(1000,9999)) -- рандомне ім'я (анти-детект)
+    BV.Name     = "OFV_" .. tostring(math.random(1000,9999))
     BV.Parent   = RootPart
     BV.Velocity = Vector3.new(Config.MaxVelocity, Config.MaxVelocity, Config.MaxVelocity)
     BV.MaxForce = Vector3.new(1/0, 1/0, 1/0)
 
-    -- Відключаємо стан сидіння
     pcall(function() Humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, false) end)
     pcall(function() Humanoid.Sit = false end)
 
-    -- Позиціонування персонажа відносно BasePart цілі
     local function FPos(BasePart, Pos, Ang)
         if not BasePart or not BasePart.Parent then return end
         if not RootPart or not RootPart.Parent then return end
         local jitter = Jitter()
         local newCF  = CFrame.new(BasePart.Position + jitter) * Pos * Ang
         pcall(function()
-            RootPart.CFrame       = newCF
-            RootPart.Velocity     = Vector3.new(Config.MaxVelocity / 10, Config.MaxVelocity, Config.MaxVelocity / 10)
-            RootPart.RotVelocity  = Vector3.new(Config.MaxVelocity, Config.MaxVelocity, Config.MaxVelocity)
+            RootPart.CFrame      = newCF
+            RootPart.Velocity    = Vector3.new(Config.MaxVelocity/10, Config.MaxVelocity, Config.MaxVelocity/10)
+            RootPart.RotVelocity = Vector3.new(Config.MaxVelocity, Config.MaxVelocity, Config.MaxVelocity)
         end)
-        -- Fallback через SetPrimaryPartCFrame
-        pcall(function()
-            Character:SetPrimaryPartCFrame(newCF)
-        end)
+        pcall(function() Character:SetPrimaryPartCFrame(newCF) end)
     end
 
-    -- Стилі флінгу
     local function GetStyleOffset(Angle)
         if State.FlingStyle == "up" then
             return CFrame.new(0, 2, 0), CFrame.Angles(math.rad(Angle), 0, 0)
@@ -283,13 +262,11 @@ local function FlingPlayer(TargetPlayer)
         end
     end
 
-    -- Основний цикл флінгу для конкретного BasePart
     local function SFBasePart(BasePart)
         local TimeToWait = Config.FlingDuration
         local StartTime  = tick()
         local Angle      = 0
 
-        -- Перевірка умов зупинки
         local function ShouldStop()
             if not State.FlingLoop then return true end
             if not BasePart or not BasePart.Parent then return true end
@@ -307,135 +284,90 @@ local function FlingPlayer(TargetPlayer)
             local stylePos, styleAng = GetStyleOffset(Angle)
 
             if stylePos then
-                -- Кастомний стиль
                 FPos(BasePart, stylePos, styleAng)
                 task.wait()
                 FPos(BasePart, CFrame.new(0, -stylePos.Y, 0), styleAng)
                 task.wait()
             else
-                -- AUTO (максимальний ефект — оригінальний SkidFling)
                 local vel = BasePart.Velocity
                 if vel.Magnitude < 50 then
                     local moveDir = THumanoid.MoveDirection
-
-                    FPos(BasePart,
-                        CFrame.new(0, 1.5, 0) + moveDir * vel.Magnitude / 1.25,
-                        CFrame.Angles(math.rad(Angle), 0, 0))
-                    task.wait()
-
-                    FPos(BasePart,
-                        CFrame.new(0, -1.5, 0) + moveDir * vel.Magnitude / 1.25,
-                        CFrame.Angles(math.rad(Angle), 0, 0))
-                    task.wait()
-
-                    FPos(BasePart,
-                        CFrame.new(2.25, 1.5, -2.25) + moveDir * vel.Magnitude / 1.25,
-                        CFrame.Angles(math.rad(Angle), 0, 0))
-                    task.wait()
-
-                    FPos(BasePart,
-                        CFrame.new(-2.25, -1.5, 2.25) + moveDir * vel.Magnitude / 1.25,
-                        CFrame.Angles(math.rad(Angle), 0, 0))
-                    task.wait()
-
-                    FPos(BasePart,
-                        CFrame.new(0, 1.5, 0) + moveDir,
-                        CFrame.Angles(math.rad(Angle), 0, 0))
-                    task.wait()
-
-                    FPos(BasePart,
-                        CFrame.new(0, -1.5, 0) + moveDir,
-                        CFrame.Angles(math.rad(Angle), 0, 0))
-                    task.wait()
+                    FPos(BasePart, CFrame.new(0, 1.5, 0) + moveDir * vel.Magnitude/1.25, CFrame.Angles(math.rad(Angle),0,0)) task.wait()
+                    FPos(BasePart, CFrame.new(0,-1.5, 0) + moveDir * vel.Magnitude/1.25, CFrame.Angles(math.rad(Angle),0,0)) task.wait()
+                    FPos(BasePart, CFrame.new(2.25,1.5,-2.25)+moveDir*vel.Magnitude/1.25, CFrame.Angles(math.rad(Angle),0,0)) task.wait()
+                    FPos(BasePart, CFrame.new(-2.25,-1.5,2.25)+moveDir*vel.Magnitude/1.25,CFrame.Angles(math.rad(Angle),0,0)) task.wait()
+                    FPos(BasePart, CFrame.new(0, 1.5, 0) + moveDir, CFrame.Angles(math.rad(Angle),0,0)) task.wait()
+                    FPos(BasePart, CFrame.new(0,-1.5, 0) + moveDir, CFrame.Angles(math.rad(Angle),0,0)) task.wait()
                 else
-                    -- Ціль рухається — адаптуємось до її швидкості
                     local ws = THumanoid.WalkSpeed or 16
                     local tv = TRootPart and TRootPart.Velocity.Magnitude or ws
-
-                    FPos(BasePart, CFrame.new(0,  1.5,  ws),  CFrame.Angles(math.rad(90), 0, 0)) task.wait()
-                    FPos(BasePart, CFrame.new(0, -1.5, -ws),  CFrame.Angles(0, 0, 0))             task.wait()
-                    FPos(BasePart, CFrame.new(0,  1.5,  ws),  CFrame.Angles(math.rad(90), 0, 0)) task.wait()
-                    FPos(BasePart, CFrame.new(0,  1.5,  tv / 1.25), CFrame.Angles(math.rad(90), 0, 0)) task.wait()
-                    FPos(BasePart, CFrame.new(0, -1.5, -tv / 1.25), CFrame.Angles(0, 0, 0))             task.wait()
-                    FPos(BasePart, CFrame.new(0,  1.5,  tv / 1.25), CFrame.Angles(math.rad(90), 0, 0)) task.wait()
-                    FPos(BasePart, CFrame.new(0, -1.5,  0),         CFrame.Angles(math.rad(90), 0, 0)) task.wait()
-                    FPos(BasePart, CFrame.new(0, -1.5,  0),         CFrame.Angles(0, 0, 0))             task.wait()
-                    FPos(BasePart, CFrame.new(0, -1.5,  0),         CFrame.Angles(math.rad(-90), 0, 0)) task.wait()
-                    FPos(BasePart, CFrame.new(0, -1.5,  0),         CFrame.Angles(0, 0, 0))             task.wait()
+                    FPos(BasePart,CFrame.new(0,1.5,ws),   CFrame.Angles(math.rad(90),0,0)) task.wait()
+                    FPos(BasePart,CFrame.new(0,-1.5,-ws),  CFrame.Angles(0,0,0))            task.wait()
+                    FPos(BasePart,CFrame.new(0,1.5,ws),   CFrame.Angles(math.rad(90),0,0)) task.wait()
+                    FPos(BasePart,CFrame.new(0,1.5,tv/1.25),CFrame.Angles(math.rad(90),0,0)) task.wait()
+                    FPos(BasePart,CFrame.new(0,-1.5,-tv/1.25),CFrame.Angles(0,0,0))          task.wait()
+                    FPos(BasePart,CFrame.new(0,1.5,tv/1.25),CFrame.Angles(math.rad(90),0,0)) task.wait()
+                    FPos(BasePart,CFrame.new(0,-1.5,0),    CFrame.Angles(math.rad(90),0,0)) task.wait()
+                    FPos(BasePart,CFrame.new(0,-1.5,0),    CFrame.Angles(0,0,0))             task.wait()
+                    FPos(BasePart,CFrame.new(0,-1.5,0),    CFrame.Angles(math.rad(-90),0,0)) task.wait()
+                    FPos(BasePart,CFrame.new(0,-1.5,0),    CFrame.Angles(0,0,0))             task.wait()
                 end
             end
-
-        until ShouldStop()
-            or (BasePart.Velocity.Magnitude > 500 and tick() > StartTime + 0.5)
+        until ShouldStop() or (BasePart.Velocity.Magnitude > 500 and tick() > StartTime + 0.5)
     end
 
-    -- Вибір найкращого BasePart (пріоритет: TRootPart > THead > Handle)
     if TRootPart and THead then
         if (TRootPart.CFrame.p - THead.CFrame.p).Magnitude > 5 then
             SFBasePart(THead)
         else
             SFBasePart(TRootPart)
         end
-    elseif TRootPart then
-        SFBasePart(TRootPart)
-    elseif THead then
-        SFBasePart(THead)
-    elseif Handle then
-        SFBasePart(Handle)
+    elseif TRootPart then SFBasePart(TRootPart)
+    elseif THead      then SFBasePart(THead)
+    elseif Handle     then SFBasePart(Handle)
     end
 
-    -- ============================================================
-    -- CLEANUP
-    -- ============================================================
     pcall(function() BV:Destroy() end)
     pcall(function() Humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, true) end)
 
-    -- Відновлення камери
     if Config.CameraRestore then
         pcall(function() Camera.CameraSubject = Humanoid end)
     end
 
-    -- Безпечне повернення на стару позицію (анти-кік)
-    if Config.SafeReturn and getgenv().OldPos and IsAlive(LP) then
+    if Config.SafeReturn and _env.OldPos and IsAlive(LP) then
         local attempts  = 0
-        local targetPos = getgenv().OldPos * CFrame.new(0, 0.5, 0)
+        local targetPos = _env.OldPos * CFrame.new(0, 0.5, 0)
         repeat
             attempts = attempts + 1
             pcall(function()
-                -- Спочатку зупиняємо імпульс
                 for _, part in pairs(Character:GetDescendants()) do
                     if part:IsA("BasePart") then
-                        part.Velocity    = Vector3.zero
-                        part.RotVelocity = Vector3.zero
+                        part.Velocity = Vector3.zero; part.RotVelocity = Vector3.zero
                     end
                 end
-                -- Телепортуємось назад
                 RootPart.CFrame = targetPos
                 Character:SetPrimaryPartCFrame(targetPos)
                 Humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
             end)
             task.wait(0.05)
-        until (RootPart.Position - getgenv().OldPos.p).Magnitude < 15
-            or attempts > 20
-            or not IsAlive(LP)
+        until (RootPart.Position - _env.OldPos.p).Magnitude < 15
+            or attempts > 20 or not IsAlive(LP)
     end
 
-    workspace.FallenPartsDestroyHeight = getgenv().FPDH
+    workspace.FallenPartsDestroyHeight = _env.FPDH
     State.Flinging = false
 end
 
 -- ============================================================
--- [[ 6. ГОЛОВНИЙ ЦИКЛ З АНТИ-ДЕТЕКТОМ ]]
+-- [[ 6. ГОЛОВНИЙ ЦИКЛ ]]
 -- ============================================================
 task.spawn(function()
     while not State.Stopped do
         task.wait(Config.LoopDelay)
-
         if not State.FlingLoop then continue end
         if not IsAlive(LP) then continue end
         if State.Flinging then continue end
 
-        -- Рандомна невелика затримка між флінгами (анти-детект паттерн)
         local extraDelay = math.random(0, 3) * 0.01
         if extraDelay > 0 then task.wait(extraDelay) end
 
@@ -448,7 +380,6 @@ task.spawn(function()
                     table.insert(playerList, v)
                 end
             end
-            -- Перемішуємо список (анти-детект — не одна й та сама послідовність)
             for i = #playerList, 2, -1 do
                 local j = math.random(i)
                 playerList[i], playerList[j] = playerList[j], playerList[i]
@@ -457,7 +388,7 @@ task.spawn(function()
                 if not State.FlingLoop or State.Stopped then break end
                 if not IsAlive(v) then continue end
                 FlingPlayer(v)
-                task.wait(math.random(2, 6) * 0.01) -- рандомна затримка між цілями
+                task.wait(math.random(2, 6) * 0.01)
             end
         elseif target and target ~= LP then
             FlingPlayer(target)
@@ -468,47 +399,51 @@ task.spawn(function()
 end)
 
 -- ============================================================
--- [[ 7. АВТО-ВІДНОВЛЕННЯ ПІСЛЯ СМЕРТІ/РЕСПАВНУ ]]
+-- [[ 7. АВТО-ВІДНОВЛЕННЯ ПІСЛЯ СМЕРТІ ]]
+-- FIX: UpdateStatus через flag замість прямого виклику до ініціалізації GUI
 -- ============================================================
-local wasFlinging = false
+local wasFlinging     = false
+local guiReadyFlag    = false  -- стає true після ініціалізації GUI
+local pendingUIUpdate = false  -- черга оновлення статусу
 
-LP.CharacterAdded:Connect(function(newChar)
-    wasFlinging = State.FlingLoop
+LP.CharacterAdded:Connect(function(_newChar)
+    wasFlinging     = State.FlingLoop
     State.FlingLoop = false
     State.Flinging  = false
-    workspace.FallenPartsDestroyHeight = getgenv().FPDH
+    workspace.FallenPartsDestroyHeight = _env.FPDH
 
     if Config.AutoRespawn and wasFlinging then
-        -- Чекаємо поки персонаж завантажиться
         task.wait(3)
         if not State.Stopped then
             State.FlingLoop = true
-            UpdateStatus and UpdateStatus()
             Notify("OMNI-FLING", "Авто-відновлення флінгу ✓", 2)
         end
     else
-        UpdateStatus and UpdateStatus()
         Notify("OMNI-FLING", "Вимкнено при респавні", 2)
+    end
+
+    -- FIX: оновлюємо UI через flag щоб уникнути nil-виклику
+    if guiReadyFlag then
+        pendingUIUpdate = true
     end
 end)
 
--- Зупинка при виході з гри
 game:GetService("Players").LocalPlayer.AncestryChanged:Connect(function()
     State.Stopped = true
 end)
 
 -- ============================================================
--- [[ 8. АНТИ-АФК СТАРТ ]]
+-- [[ 8. АНТІ-АФК ]]
 -- ============================================================
 StartAntiAFK()
 
 -- ============================================================
 -- [[ 9. GUI ]]
 -- ============================================================
-local GuiParent = LP:WaitForChild("PlayerGui")
+local GuiParent = LP:WaitForChild("PlayerGui", 10) or LP:FindFirstChildOfClass("PlayerGui") or LP:WaitForChild("PlayerGui")
 pcall(function()
     local cg = game:GetService("CoreGui")
-    local _  = cg.Name
+    local _  = cg.Name  -- перевіряємо доступ
     GuiParent = cg
 end)
 
@@ -516,7 +451,7 @@ local Screen = Instance.new("ScreenGui", GuiParent)
 Screen.Name           = "OmniFling"
 Screen.ResetOnSpawn   = false
 Screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-Screen.DisplayOrder   = 999 -- завжди поверх
+Screen.DisplayOrder   = 999
 
 local W = IsMobile and 270 or 275
 local H = IsMobile and 480 or 440
@@ -530,7 +465,7 @@ Main.ClipsDescendants = true
 Instance.new("UICorner", Main)
 
 local MainStroke = Instance.new("UIStroke", Main)
-MainStroke.Color     = Color3.fromRGB(255, 255, 255)
+MainStroke.Color     = Color3.fromRGB(255,255,255)
 MainStroke.Thickness = 2
 
 -- Title Bar
@@ -556,20 +491,21 @@ TitleLbl.TextSize               = IsMobile and 14 or 15
 TitleLbl.Text                   = "⚡ OMNI-FLING  MONSTER"
 TitleLbl.ZIndex                 = 2
 
-local CloseBtn = Instance.new("TextButton", TitleBar)
-CloseBtn.Size             = UDim2.new(0, 28, 0, 28)
-CloseBtn.Position         = UDim2.new(1, -32, 0.5, -14)
-CloseBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-CloseBtn.Text             = "✕"
-CloseBtn.TextColor3       = Color3.fromRGB(255,255,255)
-CloseBtn.Font             = Enum.Font.GothamBold
-CloseBtn.TextSize         = 13
-CloseBtn.BorderSizePixel  = 0
-CloseBtn.ZIndex           = 3
-Instance.new("UICorner", CloseBtn)
-CloseBtn.MouseButton1Click:Connect(function() Main.Visible = false end)
+do  -- CloseBtn (локальна область)
+    local CloseBtn = Instance.new("TextButton", TitleBar)
+    CloseBtn.Size             = UDim2.new(0, 28, 0, 28)
+    CloseBtn.Position         = UDim2.new(1, -32, 0.5, -14)
+    CloseBtn.BackgroundColor3 = Color3.fromRGB(50,50,50)
+    CloseBtn.Text             = "✕"
+    CloseBtn.TextColor3       = Color3.fromRGB(255,255,255)
+    CloseBtn.Font             = Enum.Font.GothamBold
+    CloseBtn.TextSize         = 13
+    CloseBtn.BorderSizePixel  = 0
+    CloseBtn.ZIndex           = 3
+    Instance.new("UICorner", CloseBtn)
+    CloseBtn.MouseButton1Click:Connect(function() Main.Visible = false end)
+end
 
--- Scroll
 local Scroll = Instance.new("ScrollingFrame", Main)
 Scroll.Size                   = UDim2.new(1, -10, 1, -52)
 Scroll.Position               = UDim2.new(0, 5, 0, 48)
@@ -583,17 +519,17 @@ Layout.Padding             = UDim.new(0, 6)
 Layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
 Layout.SortOrder           = Enum.SortOrder.LayoutOrder
 
-local Pad = Instance.new("UIPadding", Scroll)
-Pad.PaddingTop    = UDim.new(0, 4)
-Pad.PaddingBottom = UDim.new(0, 8)
+do  -- Pad (не потрібен далі)
+    local Pad = Instance.new("UIPadding", Scroll)
+    Pad.PaddingTop    = UDim.new(0, 4)
+    Pad.PaddingBottom = UDim.new(0, 8)
+end
 
 Layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
     Scroll.CanvasSize = UDim2.new(0, 0, 0, Layout.AbsoluteContentSize.Y + 12)
 end)
 
--- ============================================================
 -- GUI ХЕЛПЕРИ
--- ============================================================
 local orderCount = 0
 local function NextOrder() orderCount += 1; return orderCount end
 
@@ -601,13 +537,13 @@ local function AddCat(text)
     local f = Instance.new("Frame", Scroll)
     f.Size             = UDim2.new(0.97, 0, 0, 22)
     f.LayoutOrder      = NextOrder()
-    f.BackgroundColor3 = Color3.fromRGB(16, 16, 24)
+    f.BackgroundColor3 = Color3.fromRGB(16,16,24)
     f.BorderSizePixel  = 0
     Instance.new("UICorner", f)
     local l = Instance.new("TextLabel", f)
     l.Size                   = UDim2.new(1, 0, 1, 0)
     l.BackgroundTransparency = 1
-    l.TextColor3             = Color3.fromRGB(160, 160, 190)
+    l.TextColor3             = Color3.fromRGB(160,160,190)
     l.Font                   = Enum.Font.GothamBold
     l.TextSize               = 11
     l.Text                   = "── " .. text .. " ──"
@@ -618,7 +554,7 @@ local function MakeBtn(text, color)
     btn.Size             = UDim2.new(0.97, 0, 0, IsMobile and 50 or 44)
     btn.LayoutOrder      = NextOrder()
     btn.Text             = text
-    btn.BackgroundColor3 = color or Color3.fromRGB(32, 32, 46)
+    btn.BackgroundColor3 = color or Color3.fromRGB(32,32,46)
     btn.TextColor3       = Color3.fromRGB(255,255,255)
     btn.Font             = Enum.Font.GothamBold
     btn.TextSize         = 13
@@ -626,8 +562,7 @@ local function MakeBtn(text, color)
     btn.AutoButtonColor  = false
     Instance.new("UICorner", btn)
     local st = Instance.new("UIStroke", btn)
-    st.Color     = Color3.fromRGB(60,60,80)
-    st.Thickness = 1
+    st.Color = Color3.fromRGB(60,60,80); st.Thickness = 1
     return btn
 end
 
@@ -640,12 +575,9 @@ local function MakeToggle(text, state)
     return btn
 end
 
--- ============================================================
 -- GUI КОНТЕНТ
--- ============================================================
-
--- TARGET
 AddCat("TARGET  (ім'я / all / random / пусто = найближчий)")
+
 local TargetBox = Instance.new("TextBox", Scroll)
 TargetBox.Size              = UDim2.new(0.97, 0, 0, IsMobile and 46 or 40)
 TargetBox.LayoutOrder       = NextOrder()
@@ -659,20 +591,18 @@ TargetBox.TextSize          = 13
 TargetBox.ClearTextOnFocus  = false
 TargetBox.BorderSizePixel   = 0
 Instance.new("UICorner", TargetBox)
-local tbSt = Instance.new("UIStroke", TargetBox)
-tbSt.Color = Color3.fromRGB(60,60,100); tbSt.Thickness = 1
+do local tbSt = Instance.new("UIStroke", TargetBox)
+tbSt.Color = Color3.fromRGB(60,60,100); tbSt.Thickness = 1 end
 TargetBox.FocusLost:Connect(function() Config.CurrentTarget = TargetBox.Text end)
 
--- FLING
 AddCat("FLING")
-local StartBtn = MakeBtn("▶  START FLING", Color3.fromRGB(22, 130, 40))
+local StartBtn = MakeBtn("▶  START FLING", Color3.fromRGB(22,130,40))
 StartBtn.TextSize = IsMobile and 15 or 14
 StartBtn.Size     = UDim2.new(0.97, 0, 0, IsMobile and 56 or 50)
-local startSt = StartBtn:FindFirstChildOfClass("UIStroke")
-if startSt then startSt.Color = Color3.fromRGB(80,200,80); startSt.Thickness = 1.5 end
+do local startSt = StartBtn:FindFirstChildOfClass("UIStroke")
+if startSt then startSt.Color = Color3.fromRGB(80,200,80); startSt.Thickness = 1.5 end end
 
--- STYLE
-local styles     = {"auto", "up", "side", "down", "spin"}
+local styles     = {"auto","up","side","down","spin"}
 local styleIdx2  = 1
 local styleNames = {
     auto = "🌀  STYLE: AUTO (max dmg)",
@@ -683,8 +613,14 @@ local styleNames = {
 }
 local StyleBtn = MakeBtn("🌀  STYLE: AUTO (max dmg)")
 
--- DURATION
 AddCat("FLING DURATION")
+
+-- Duration slider
+local sliderDrag  = false
+local durLevels   = {1, 1.5, 2, 2.5, 3, 4, 5, 7, 10}
+local durIdx      = 3
+local knobSz      = IsMobile and 18 or 13   -- FIX: renamed from kSz to avoid confusion
+
 local DurContainer = Instance.new("Frame", Scroll)
 DurContainer.Size             = UDim2.new(0.97, 0, 0, 52)
 DurContainer.LayoutOrder      = NextOrder()
@@ -714,35 +650,30 @@ DurFill.Size             = UDim2.new(0.18, 0, 1, 0)
 DurFill.BackgroundColor3 = Color3.fromRGB(200,200,200)
 DurFill.BorderSizePixel  = 0
 Instance.new("UICorner", DurFill)
-local dGrad = Instance.new("UIGradient", DurFill)
+do local dGrad = Instance.new("UIGradient", DurFill)
 dGrad.Color = ColorSequence.new({
     ColorSequenceKeypoint.new(0, Color3.fromRGB(60,60,60)),
     ColorSequenceKeypoint.new(1, Color3.fromRGB(255,255,255)),
-})
+}) end
 
-local kSz = IsMobile and 18 or 13
 local DurKnob = Instance.new("Frame", DurTrack)
-DurKnob.Size             = UDim2.new(0, kSz, 0, kSz)
-DurKnob.Position         = UDim2.new(0.18, -kSz/2, 0.5, -kSz/2)
+DurKnob.Size             = UDim2.new(0, knobSz, 0, knobSz)
+DurKnob.Position         = UDim2.new(0.18, -knobSz/2, 0.5, -knobSz/2)
 DurKnob.BackgroundColor3 = Color3.fromRGB(255,255,255)
 DurKnob.BorderSizePixel  = 0
 Instance.new("UICorner", DurKnob)
 
-local durLevels = {1, 1.5, 2, 2.5, 3, 4, 5, 7, 10}
-local durIdx    = 3
 Config.FlingDuration = durLevels[durIdx]
 
-local sliderDrag = false
 local function UpdateDurSlider(inp)
     local rel = math.clamp(
-        (inp.Position.X - DurTrack.AbsolutePosition.X) / DurTrack.AbsoluteSize.X,
-        0, 1)
-    local idx       = math.clamp(math.round(rel * (#durLevels - 1)) + 1, 1, #durLevels)
+        (inp.Position.X - DurTrack.AbsolutePosition.X) / DurTrack.AbsoluteSize.X, 0, 1)
+    local idx = math.clamp(math.round(rel * (#durLevels - 1)) + 1, 1, #durLevels)
     durIdx               = idx
     Config.FlingDuration = durLevels[idx]
     local relPos         = (idx - 1) / (#durLevels - 1)
     DurFill.Size         = UDim2.new(relPos, 0, 1, 0)
-    DurKnob.Position     = UDim2.new(relPos, -kSz/2, 0.5, -kSz/2)
+    DurKnob.Position     = UDim2.new(relPos, -knobSz/2, 0.5, -knobSz/2)
     DurLabel.Text        = "Duration: " .. durLevels[idx] .. "s"
 end
 
@@ -766,7 +697,6 @@ UIS.InputEnded:Connect(function(inp)
     end
 end)
 
--- ОПЦІЇ (анти-детект тоггли)
 AddCat("ANTI-DETECT OPTIONS")
 
 local AutoRespawnBtn = MakeToggle("AUTO RESUME AFTER DEATH", Config.AutoRespawn)
@@ -801,13 +731,11 @@ JitterBtn.MouseButton1Click:Connect(function()
     RefreshToggle(JitterBtn, Config.TeleportNoise, "TELEPORT NOISE (anti-detect)")
 end)
 
--- WHITELIST
 AddCat("WHITELIST")
 local WLBtn    = MakeBtn("🛡  ADD CLOSEST TO WHITELIST")
 local ClearBtn = MakeBtn("🗑  CLEAR WHITELIST", Color3.fromRGB(36,16,16))
 ClearBtn.TextColor3 = Color3.fromRGB(220,130,130)
 
--- STATUS
 AddCat("STATUS")
 local StatusLbl = Instance.new("TextLabel", Scroll)
 StatusLbl.Size                   = UDim2.new(0.97, 0, 0, 28)
@@ -818,22 +746,25 @@ StatusLbl.TextColor3             = Color3.fromRGB(100,100,115)
 StatusLbl.Font                   = Enum.Font.GothamBold
 StatusLbl.TextSize               = 13
 
-local KeysLbl = Instance.new("TextLabel", Scroll)
-KeysLbl.Size                   = UDim2.new(0.97, 0, 0, IsMobile and 36 or 22)
-KeysLbl.LayoutOrder            = NextOrder()
-KeysLbl.BackgroundTransparency = 1
-KeysLbl.TextWrapped            = true
-KeysLbl.Text                   = IsMobile
-    and "F = меню  |  K = увімк/вимк"
-    or  "J = UI  |  K = Toggle Fling"
-KeysLbl.TextColor3             = Color3.fromRGB(55,55,70)
-KeysLbl.Font                   = Enum.Font.Gotham
-KeysLbl.TextSize               = IsMobile and 12 or 11
+do  -- KeysLbl (не потрібен далі)
+    local KeysLbl = Instance.new("TextLabel", Scroll)
+    KeysLbl.Size                   = UDim2.new(0.97, 0, 0, IsMobile and 36 or 22)
+    KeysLbl.LayoutOrder            = NextOrder()
+    KeysLbl.BackgroundTransparency = 1
+    KeysLbl.TextWrapped            = true
+    KeysLbl.Text                   = IsMobile
+        and "F = меню  |  K = увімк/вимк"
+        or  "J = UI  |  K = Toggle Fling"
+    KeysLbl.TextColor3             = Color3.fromRGB(55,55,70)
+    KeysLbl.Font                   = Enum.Font.Gotham
+    KeysLbl.TextSize               = IsMobile and 12 or 11
+end
 
 -- ============================================================
 -- ЛОГІКА КНОПОК
+-- FIX: UpdateStatus тепер local, оголошена до CharacterAdded
 -- ============================================================
-function UpdateStatus()
+local function UpdateStatus()
     if State.FlingLoop then
         StatusLbl.Text            = "● ACTIVE — флінгує"
         StatusLbl.TextColor3      = Color3.fromRGB(70,255,110)
@@ -846,6 +777,10 @@ function UpdateStatus()
         StartBtn.BackgroundColor3 = Color3.fromRGB(22,130,40)
     end
 end
+
+-- Позначаємо що GUI готовий + обробляємо відкладені оновлення
+guiReadyFlag = true
+if pendingUIUpdate then UpdateStatus(); pendingUIUpdate = false end
 
 StartBtn.MouseButton1Click:Connect(function()
     State.FlingLoop = not State.FlingLoop
@@ -878,8 +813,18 @@ ClearBtn.MouseButton1Click:Connect(function()
     Notify("WHITELIST", "Список очищено ✓", 2)
 end)
 
+-- Оновлення статусу кожні 0.5 сек (для автовідновлення після смерті)
+task.spawn(function()
+    while not State.Stopped do
+        task.wait(0.5)
+        if pendingUIUpdate and guiReadyFlag then
+            UpdateStatus(); pendingUIUpdate = false
+        end
+    end
+end)
+
 -- ============================================================
--- DRAGGABLE (Main)
+-- DRAGGABLE
 -- ============================================================
 do
     local drag, dStart, dPos = false, nil, nil
@@ -905,7 +850,7 @@ do
 end
 
 -- ============================================================
--- F / K КНОПКИ (мобіль)
+-- F / K КНОПКИ
 -- ============================================================
 local MBtnSz = IsMobile and 58 or 46
 
@@ -921,6 +866,7 @@ MBtn.BorderSizePixel  = 0
 MBtn.AutoButtonColor  = false
 MBtn.ZIndex           = 100
 Instance.new("UICorner", MBtn)
+
 local mSt = Instance.new("UIStroke", MBtn)
 mSt.Color = Color3.fromRGB(255,255,255); mSt.Thickness = 2
 
@@ -937,15 +883,14 @@ if IsMobile then
     KBtn.AutoButtonColor  = false
     KBtn.ZIndex           = 100
     Instance.new("UICorner", KBtn)
-    local kSt2 = Instance.new("UIStroke", KBtn)
-    kSt2.Color = Color3.fromRGB(255,255,255); kSt2.Thickness = 2
+    do local kSt2 = Instance.new("UIStroke", KBtn)  -- FIX: renamed variable (was collision-prone)
+    kSt2.Color = Color3.fromRGB(255,255,255); kSt2.Thickness = 2 end
 
     KBtn.MouseButton1Click:Connect(function()
         State.FlingLoop = not State.FlingLoop
         UpdateStatus()
         KBtn.BackgroundColor3 = State.FlingLoop
-            and Color3.fromRGB(150,28,28)
-            or  Color3.fromRGB(22,130,40)
+            and Color3.fromRGB(150,28,28) or Color3.fromRGB(22,130,40)
         Notify("OMNI-FLING", State.FlingLoop and "Fling ON ✓" or "Fling OFF ✗", 1.5)
     end)
 
@@ -969,6 +914,7 @@ if IsMobile then
         UIS.InputEnded:Connect(function(inp)
             if inp.UserInputType == Enum.UserInputType.Touch then d2 = false end
         end)
+        _ = m2  -- suppress unused warning
     end
 end
 
@@ -1049,15 +995,23 @@ UIS.InputBegan:Connect(function(inp, gpe)
     end
 end)
 
--- Зупинка через getgenv (для перезапуску)
-getgenv().OmniFlingStop = function()
+-- ============================================================
+-- ЗУПИНКА
+-- ============================================================
+_env.OmniFlingStop = function()
     State.Stopped   = true
     State.FlingLoop = false
     State.Flinging  = false
-    workspace.FallenPartsDestroyHeight = getgenv().FPDH
-    pcall(function() Camera.CameraSubject = LP.Character:FindFirstChildOfClass("Humanoid") end)
+    workspace.FallenPartsDestroyHeight = _env.FPDH
+    pcall(function()
+        local char = LP.Character
+        if char then
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if hum then Camera.CameraSubject = hum end
+        end
+    end)
     pcall(function() Screen:Destroy() end)
-    getgenv().OmniFlingLoaded = false
+    _env.OmniFlingLoaded = false
 end
 
 -- ============================================================
